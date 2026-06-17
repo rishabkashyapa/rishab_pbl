@@ -6,6 +6,76 @@ import plotly.graph_objects as go
 import io
 
 # =========================
+# LANCZOS INTERPOLATION
+# =========================
+
+def lanczos_kernel(x, a=3):
+    x = np.array(x, dtype=float)
+
+    out = np.sinc(x) * np.sinc(x / a)
+
+    out[np.abs(x) >= a] = 0
+
+    return out
+
+
+def lanczos_resample(sample_pos, sampled, full_pos, a=3):
+
+    reconstructed = np.zeros(len(full_pos))
+
+    for i, t in enumerate(full_pos):
+
+        x = (t - sample_pos) / np.mean(np.diff(sample_pos))
+
+        weights = lanczos_kernel(x, a)
+
+        s = np.sum(weights)
+
+        if abs(s) > 1e-12:
+            reconstructed[i] = np.sum(sampled * weights) / s
+
+    return reconstructed
+
+
+# =========================
+# WINDOWED SINC
+# =========================
+
+def sinc_resample(sample_pos, sampled, full_pos, window=8):
+
+    reconstructed = np.zeros(len(full_pos))
+
+    Ts = np.mean(np.diff(sample_pos))
+
+    for i, t in enumerate(full_pos):
+
+        x = (t - sample_pos) / Ts
+
+        mask = np.abs(x) <= window
+
+        x_local = x[mask]
+
+        samples_local = sampled[mask]
+
+        weights = np.sinc(x_local)
+
+        hamming = (
+            0.54
+            + 0.46 * np.cos(np.pi * x_local / window)
+        )
+
+        weights *= hamming
+
+        s = np.sum(weights)
+
+        if abs(s) > 1e-12:
+            reconstructed[i] = (
+                np.sum(samples_local * weights) / s
+            )
+
+    return reconstructed
+
+# =========================
 # PAGE CONFIG
 # =========================
 st.set_page_config(page_title="DSP Lab", layout="wide")
@@ -73,7 +143,7 @@ h1 {
 }
 
 [data-testid="stMetricValue"] {
-    color: #0b3d91 !important;
+    color: #082567 !important;
     font-weight: 700;
 }
 
@@ -129,33 +199,16 @@ div[data-testid="stPlotlyChart"] {
 # =========================
 st.markdown("<h1>Digital Signal Sampling & Reconstruction</h1>", unsafe_allow_html=True)
 
-# =========================
-# EXPLANATION BOX
-# =========================
-st.markdown("""
-<div class="explain">
-
-<b>System Overview:</b><br><br>
-
-This project demonstrates Digital Signal Sampling and Reconstruction using audio signals.<br><br>
-
-Steps involved:<br>
-1. Audio signal is loaded (uploaded or default).<br>
-2. FFT is applied to find dominant and maximum frequencies.<br>
-3. Nyquist rate is computed to avoid aliasing.<br>
-4. Signal is downsampled based on selected sampling rate.<br>
-5. Reconstruction is performed using interpolation methods.<br>
-6. Original and reconstructed signals are compared using error analysis.<br><br>
-
-This helps visualize how sampling rate affects signal quality and reconstruction accuracy.
-
-</div>
-""", unsafe_allow_html=True)
 
 # =========================
 # FILE UPLOAD
 # =========================
-uploaded_file = st.file_uploader("Upload WAV File", type=["wav"])
+st.markdown("### Upload Audio Signal")
+uploaded_file = st.file_uploader(
+    "",
+    type=["wav"],
+    label_visibility="collapsed"
+)
 
 def load_audio(file_obj):
     fs, audio = wavfile.read(file_obj)
@@ -173,7 +226,10 @@ else:
 # =========================
 # AUDIO PLAYBACK
 # =========================
+
+st.markdown("### Original Signal")
 st.audio((audio * 32767).astype(np.int16), sample_rate=fs)
+
 
 # =========================
 # FFT ANALYSIS
@@ -194,8 +250,15 @@ st.markdown("<div class='control-box'>", unsafe_allow_html=True)
 col1, col2 = st.columns([2, 1])
 
 with col1:
-    rate = st.slider("Sampling Rate (Hz)", 1, 200000, max(1000, nyquist))
-    rate = int(st.number_input("Custom Sampling Rate", 1, value=rate))
+
+    rate = int(
+        st.number_input(
+            "Sampling Rate (Hz)",
+            min_value=1,
+            value=max(1000, nyquist),
+            step=100
+        )
+    )
 
 with col2:
     method = st.selectbox(
@@ -217,17 +280,66 @@ full_pos = np.arange(len(audio))
 # =========================
 # RECONSTRUCTION
 # =========================
-if method == "Nearest Neighbor":
-    reconstructed = interp1d(sample_pos, sampled, kind="nearest", fill_value="extrapolate")(full_pos)
-elif method == "Linear":
-    reconstructed = interp1d(sample_pos, sampled, kind="linear", fill_value="extrapolate")(full_pos)
-elif method == "Cubic":
-    reconstructed = interp1d(sample_pos, sampled, kind="cubic", fill_value="extrapolate")(full_pos)
-elif method == "Lanczos":
-    reconstructed = interp1d(sample_pos, sampled, kind="linear", fill_value="extrapolate")(full_pos)
-else:
-    reconstructed = interp1d(sample_pos, sampled, kind="cubic", fill_value="extrapolate")(full_pos)
 
+if method == "Nearest Neighbor":
+
+    reconstructed = interp1d(
+        sample_pos,
+        sampled,
+        kind="nearest",
+        fill_value="extrapolate"
+    )(full_pos)
+
+elif method == "Linear":
+
+    reconstructed = interp1d(
+        sample_pos,
+        sampled,
+        kind="linear",
+        fill_value="extrapolate"
+    )(full_pos)
+
+elif method == "Cubic":
+
+    reconstructed = interp1d(
+        sample_pos,
+        sampled,
+        kind="cubic",
+        fill_value="extrapolate"
+    )(full_pos)
+
+elif method == "Lanczos":
+
+    reconstructed = lanczos_resample(
+        sample_pos,
+        sampled,
+        full_pos
+    )
+
+elif method == "Sinc":
+
+    reconstructed = sinc_resample(
+        sample_pos,
+        sampled,
+        full_pos
+    )
+# =========================
+# RECONSTRUCTED PLAYBACK
+# =========================
+
+reconstructed_audio = reconstructed.copy()
+
+max_amp = np.max(np.abs(reconstructed_audio))
+
+if max_amp > 0:
+    reconstructed_audio = reconstructed_audio / max_amp
+
+st.markdown("### Reconstructed Signal")
+
+st.audio(
+    (reconstructed_audio * 32767).astype(np.int16),
+    sample_rate=fs
+)
 # =========================
 # METRICS
 # =========================
@@ -258,6 +370,63 @@ Nyquist Rate: {nyquist} Hz<br>
 </div>
 """, unsafe_allow_html=True)
 
+
+# =========================
+# CONCLUSION BOX
+# =========================
+
+if rate < nyquist:
+
+    status = "ALIASING DETECTED"
+
+    conclusion = """
+    Sampling frequency is below the Nyquist rate.
+    High-frequency components overlap and cause aliasing,
+    resulting in loss of information and distortion.
+    """
+
+    colour = "#8B0000"
+
+elif rate < 1.5 * nyquist:
+
+    status = "ACCEPTABLE RECONSTRUCTION"
+
+    conclusion = """
+    Sampling frequency satisfies the Nyquist criterion.
+    The signal can be reconstructed with reasonable
+    accuracy, though small errors may remain.
+    """
+
+    colour = "#B8860B"
+
+else:
+
+    status = "HIGH-FIDELITY RECONSTRUCTION"
+
+    conclusion = """
+    Sampling frequency is well above the Nyquist rate.
+    Aliasing is avoided and the reconstructed signal
+    closely matches the original signal.
+    """
+
+    colour = "#1E6B3A"
+
+st.markdown(
+f"""
+<div class="explain">
+
+<h3 style="color:{colour}; text-align:center;">
+{status}
+</h3>
+
+<p style="text-align:center;">
+{conclusion}
+</p>
+
+</div>
+""",
+unsafe_allow_html=True
+)
 # =========================
 # PLOTS (RESTORED + FIXED)
 # =========================
@@ -265,14 +434,34 @@ display = min(4000, len(audio))
 x = np.arange(display)
 
 fig = go.Figure()
-fig.add_trace(go.Scatter(x=x, y=audio[:display], name="Original"))
-fig.add_trace(go.Scatter(x=x, y=reconstructed[:display], name="Reconstructed"))
+fig.add_trace(
+    go.Scatter(
+        x=x,
+        y=audio[:display],
+        name="Original",
+        line=dict(color="#0B2545", width=2.5)
+    )
+)
 
+fig.add_trace(
+    go.Scatter(
+        x=x,
+        y=reconstructed[:display],
+        name="Reconstructed",
+        line=dict(color="#8B5E34", width=2.5)
+    )
+)
 fig.update_layout(
     title="Original vs Reconstructed Signal",
     paper_bgcolor="#ffffff",
     plot_bgcolor="#ffffff",
     font=dict(color="#1e1e1e"),
+    legend=dict(
+        font=dict(
+            color="#1A1A1A",
+            size=14
+        )
+    ),
     height=450,
     margin=dict(l=40, r=40, t=50, b=40)
 )
@@ -280,13 +469,25 @@ fig.update_layout(
 st.plotly_chart(fig, use_container_width=True)
 
 fig2 = go.Figure()
-fig2.add_trace(go.Scatter(x=x, y=error[:display], name="Error"))
-
+fig2.add_trace(
+    go.Scatter(
+        x=x,
+        y=error[:display],
+        name="Error",
+        line=dict(color="#7A1F1F", width=2.5)
+    )
+)
 fig2.update_layout(
     title="Reconstruction Error",
     paper_bgcolor="#ffffff",
     plot_bgcolor="#ffffff",
     font=dict(color="#1e1e1e"),
+    legend=dict(
+        font=dict(
+            color="#1A1A1A",
+            size=14
+        )
+    ),
     height=400,
     margin=dict(l=40, r=40, t=50, b=40)
 )
