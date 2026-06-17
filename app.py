@@ -304,3 +304,4 @@ with st.expander("Advanced Signal Information"):
         "Max Frequency": round(max_frequency, 2),
         "Method": method
     })
+ghg
